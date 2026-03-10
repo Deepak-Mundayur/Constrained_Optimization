@@ -1,5 +1,8 @@
 module Constrained_Optimization
 
+using HomotopyContinuation
+using Plots
+
 include("force_directed_point.jl")
 include("force_fields.jl")
 

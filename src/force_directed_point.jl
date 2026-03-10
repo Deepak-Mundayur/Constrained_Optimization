@@ -1,5 +1,6 @@
 using Plots
 using HomotopyContinuation
+using LinearAlgebra
 
 struct Point
     position::Vector{Float64}
@@ -41,12 +42,14 @@ function point_move_under_force_field(initial_position::Vector{Float64}, force_f
     return p
 end
 
+
+
 function motion_under_force_field_with_constraint(initial_position::Vector{Float64}, force_field::Function, constraint_system::System, time::Float64; dt=0.01, plot_trajectory=true)
     n= length(initial_position)
     p = Point(initial_position, zeros(n))
     z = variables(constraint_system)
     constraint = expressions(constraint_system)
-    ∇constraint = differentiate(constraint, variables(constraint_system))
+    ∇constraint = differentiate(constraint, variables(constraint_system))'
 
     #Constructing the Witness set system for projection
     @var λ, a[1:n]
@@ -54,11 +57,14 @@ function motion_under_force_field_with_constraint(initial_position::Vector{Float
     W = System(witness_eqns, variables = [z..., λ], parameters = a[1:n])
 
     a_0 = randn(Float64, n)
-    p_0 = real_solutions(solve(W, target_parameters = a_0))[1]
+    full_sol = real_solutions(solve(W, target_parameters = a_0))[1]
+    p_0 = full_sol[1:n]
+    λ_0 = full_sol[end]
+    current_solution = full_sol
 
     #Ourside points due to force
-    temp_as = [a_0]
-    p = Point(real(p_0), zeros(n))
+    temp_as = [Point(a_0, zeros(n))]
+    p = Point(p_0, zeros(n))
 
     # Collect trajectory data if plotting
     positions = plot_trajectory ? Vector{Vector{Float64}}() : nothing
@@ -74,13 +80,16 @@ function motion_under_force_field_with_constraint(initial_position::Vector{Float
         push!(temp_as, a_temp)
 
         # Projecting back to the constrained surface:
-        position_new = solutions(solve(W, p.position, target_parameters = a_temp.position, start_paramters = temp_as[end-1].position))
-        ∇constraint_p = subs(∇constraint, z=> p.position)
+        result = solve(W, current_solution, target_parameters = vec(a_temp.position), start_parameters = vec(temp_as[end-1].position))
+        new_full_sol = solutions(result)[1]
+        position_new = new_full_sol[1:n]
+        λ_new = new_full_sol[end]
+        ∇constraint_p = evaluate(∇constraint, z=> p.position)
         n = ∇constraint_p / norm(∇constraint_p)  # Normal vector to the constraint surface at p
         P = I - n * n'  # Projection matrix onto the tangent space of the constraint surface
         velocity_new = P * p.velocity
-        p = Point(position_new, velocity_new)  
-        # Keep the velocity from the unconstrained step
+        p = Point(position_new, velocity_new)
+        current_solution = new_full_sol
     end
 
     # Plot trajectory if requested
