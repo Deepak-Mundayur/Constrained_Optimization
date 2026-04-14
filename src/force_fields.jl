@@ -1,7 +1,7 @@
 
 
 # Define force field with correct signature
-function gravity_force_field(x::Vector{Float64}, t::Float64)
+function gravity_force_field(x::Vector{Float64}; t=1.0)
     n = length(x)
     force_at_x = push!([0.0 for _ in 1:n-1], -1.0)  # Gravity in last component
     return force_at_x
