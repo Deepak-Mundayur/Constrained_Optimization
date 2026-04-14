@@ -1,7 +1,3 @@
-using Plots
-using HomotopyContinuation
-using LinearAlgebra
-
 struct Point
     position::Vector{Float64}
     velocity::Vector{Float64}
@@ -84,10 +80,13 @@ function motion_under_force_field_with_constraint(initial_position::Vector{Float
         new_full_sol = solutions(result)[1]
         position_new = new_full_sol[1:n]
         λ_new = new_full_sol[end]
-        ∇constraint_p = evaluate(∇constraint, z=> p.position)
-        n = ∇constraint_p / norm(∇constraint_p)  # Normal vector to the constraint surface at p
-        P = I - n * n'  # Projection matrix onto the tangent space of the constraint surface
-        velocity_new = P * p.velocity
+
+        # Project the temporary new velocity onto the tangent space at the new position
+        v_temp = a_temp.velocity # This is p.velocity + force * dt
+        ∇constraint_p_new = evaluate(∇constraint, z=> position_new)
+        n_new = ∇constraint_p_new / norm(∇constraint_p_new)  # Normal vector at the new position
+        P_new = I - n_new * n_new'  # Projection matrix onto the tangent space at the new position
+        velocity_new = P_new * v_temp
         p = Point(position_new, velocity_new)
         current_solution = new_full_sol
     end
