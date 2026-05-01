@@ -631,15 +631,19 @@ end
 # 2. PREDICTORS (Moving out from the manifold)
 # ==========================================
 
-function ambient_predictor(pos, v, force, dt, H_system)
-    v_new = v + force * dt
+function ambient_predictor(pos, v, field_val, dt, H_system, field_type)
+    v_new = (field_type == :force) ? (v + field_val * dt) : field_val
     pos_temp = pos + v_new * dt
     return pos_temp, v_new
 end
 
-function tangent_predictor(pos, v, force, dt, H_system)
-    force_proj = project_to_tangent(force, pos, H_system)
-    v_new = v + force_proj * dt
+function tangent_predictor(pos, v, field_val, dt, H_system, field_type)
+    if field_type == :force
+        field_proj = project_to_tangent(field_val, pos, H_system)
+        v_new = v + field_proj * dt
+    else # :velocity
+        v_new = project_to_tangent(field_val, pos, H_system)
+    end
     pos_temp = pos + v_new * dt
     return pos_temp, v_new
 end
@@ -713,9 +717,10 @@ end
 # 4. THE MASTER SOLVER
 # ==========================================
 
-function run_constrained_dynamics(pos_start, v_start, Force_field, dt, N_steps, H_system; 
+function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps, H_system; 
                                   predictor = tangent_predictor, 
                                   corrector = hc_orthogonal_corrector,
+                                  field_type = :force,
                                   make_gif = false,
                                   filename = "dynamics.gif")
                                   
@@ -738,10 +743,10 @@ function run_constrained_dynamics(pos_start, v_start, Force_field, dt, N_steps, 
 
     println("--- Executing Dynamics Path ---")
     for i in 1:N_steps
-        current_force = Force_field(pos_bead)
+        field_value = vector_field(pos_bead)
         
         # 1. PREDICTOR STEP (Function specialization ensures zero branching overhead)
-        pos_temp, v_bead = predictor(pos_bead, v_bead, current_force, dt, H_system)
+        pos_temp, v_bead = predictor(pos_bead, v_bead, field_value, dt, H_system, field_type)
 
         if make_gif
             scatter!(plt, [pos_temp[1]], [pos_temp[2]], color=:green, markersize=4, label= i==1 ? "Predicted Point" : "")
@@ -772,26 +777,33 @@ end
 # 5. EXECUTION SCRIPT
 # ==========================================
 
-# @var x[1:2]
-# circle_expr = x[1]^2 + x[2]^2 - 1.0
-# circle_system = System([circle_expr], variables=x)
+# # @var x[1:2]
+# # circle_expr = x[1]^2 + x[2]^2 - 1.0
+# # circle_system = System([circle_expr], variables=x)
 
-# Force_gravity(pos) = [0.0, -0.1]
-# pos_0 = [cos(pi/4), sin(pi/4)]
-# vel_0 = [0.0, 0.0]
+# # force_gravity(pos) = [0.0, -0.1]
+# # velocity_rotation(pos) = [-pos[2], pos[1]] # A field that rotates points around the origin
 
-# dt = 0.5
-# N = 20
+# # pos_0 = [cos(pi/4), sin(pi/4)]
+# # vel_0 = [0.0, 0.0]
 
-# # Example 1: Run your "Algorithm 1" (Ambient Predictor + HC Orthogonal Corrector) and make a GIF
-# run_constrained_dynamics(pos_0, vel_0, Force_gravity, dt, N, circle_system, 
-#                          predictor = ambient_predictor, 
-#                          corrector = hc_orthogonal_corrector, 
-#                          make_gif = true, filename = "algo1_rebuilt.gif")
+# # dt = 0.5
+# # N = 20
 
-# # Example 2: Run a fast data-only track using Tangent Predictor and Moore-Penrose Corrector
-# history_mp = run_constrained_dynamics(pos_0, vel_0, Force_gravity, dt, N, circle_system, 
-#                                       predictor = tangent_predictor, 
-#                                       corrector = moore_penrose_corrector)
+# # # Example 1: Run with a force field (gravity)
+# # run_constrained_dynamics(pos_0, vel_0, force_gravity, dt, N, circle_system, 
+# #                          predictor = ambient_predictor, 
+# #                          corrector = hc_orthogonal_corrector, 
+# #                          field_type = :force,
+# #                          make_gif = true, filename = "dynamics_force.gif")
 
-# println("Final position (Moore-Penrose): ", history_mp[end])
+# # # Example 2: Run with a velocity field (rotation)
+# # history_vf = run_constrained_dynamics(pos_0, vel_0, velocity_rotation, dt, N, circle_system, 
+# #                                       predictor = tangent_predictor, 
+# #                                       corrector = moore_penrose_corrector,
+# #                                       field_type = :velocity,
+# #                                       make_gif = true, filename = "dynamics_velocity.gif")
+
+# # println("Final position (velocity field): ", history_vf[end])
+
+
