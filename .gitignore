@@ -1,4 +1,5 @@
-videos/_pycache_
-videos/media
+figs_and_videos/_pycache_
+figs_and_videos/media
+figs_and_videos/julia_generated
 dynamics_algo1.gif
 dynamics_algo2.gif
