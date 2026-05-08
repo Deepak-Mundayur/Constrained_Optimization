@@ -627,94 +627,9 @@ function plot_variety(H_system::System, bounds=(-3.0, 3.0), pts=150; plot_title=
 end
 
 
-# ==========================================
-# 2. PREDICTORS (Moving out from the manifold)
-# ==========================================
-
-function ambient_predictor(pos, v, field_val, dt, H_system, field_type)
-    v_new = (field_type == :force) ? (v + field_val * dt) : field_val
-    pos_temp = pos + v_new * dt
-    return pos_temp, v_new
-end
-
-function tangent_predictor(pos, v, field_val, dt, H_system, field_type)
-    if field_type == :force
-        field_proj = project_to_tangent(field_val, pos, H_system)
-        v_new = v + field_proj * dt
-    else # :velocity
-        v_new = project_to_tangent(field_val, pos, H_system)
-    end
-    pos_temp = pos + v_new * dt
-    return pos_temp, v_new
-end
-
 
 # ==========================================
-# 3. CORRECTORS (Projecting back to the manifold)
-# ==========================================
-# Note: Every corrector accepts `kwargs...` so the master loop can blindly pass 
-# F_ortho and F_parallel without causing MethodErrors if a corrector doesn't need them.
-
-function hc_orthogonal_corrector(pos_temp, pos_old, v, H_system; F_ortho, kwargs...)
-    result = solve(F_ortho, [pos_old]; start_parameters=pos_old, target_parameters=pos_temp, show_progress=false)
-    pos_bead = real.(solutions(result)[1])
-    v_bead = project_to_tangent(v, pos_bead, H_system)
-    return pos_bead, v_bead
-end
-
-function hc_parallel_corrector(pos_temp, pos_old, v, H_system; F_parallel, kwargs...)
-    Jx = jacobian(H_system, pos_old) 
-    n_vec = [Jx[1,1], Jx[1,2]]
-    
-    start_params = [pos_old; n_vec] 
-    target_params = [pos_temp; n_vec] 
-
-    result = solve(F_parallel, [pos_old]; start_parameters=start_params, target_parameters=target_params, show_progress=false)
-    pos_bead = real.(solutions(result)[1])
-    v_bead = project_to_tangent(v, pos_bead, H_system)
-    return pos_bead, v_bead
-end
-
-function ordinary_newton_corrector(pos_temp, pos_old, v, H_system; F_ortho, kwargs...)
-    # Standard Newton-Raphson jumping straight to the solution of the square system
-    pos_bead = float.(copy(pos_temp))
-    target_params = pos_temp 
-    
-    for iter in 1:50
-        val = real.(F_ortho(pos_bead, target_params))
-        if norm(val) < 1e-10
-            break
-        end
-        # Use standard matrix inverse since F_ortho is a square 2x2 system
-        Jx = real.(jacobian(F_ortho, pos_bead, target_params))
-        pos_bead = pos_bead - inv(Jx) * val
-    end
-    
-    v_bead = project_to_tangent(v, pos_bead, H_system)
-    return pos_bead, v_bead
-end
-
-function moore_penrose_corrector(pos_temp, pos_old, v, H_system; kwargs...)
-    # Underdetermined Newton-Raphson acting directly on the manifold constraint H(x) = 0
-    pos_bead = float.(copy(pos_temp))
-    
-    for iter in 1:50
-        val = real.(H_system(pos_bead))
-        if norm(val) < 1e-10
-            break
-        end
-        # Use Moore-Penrose pseudoinverse since Jx is a wide 1x2 matrix
-        Jx = real.(jacobian(H_system, pos_bead))
-        pos_bead = pos_bead - pinv(Jx) * val
-    end
-    
-    v_bead = project_to_tangent(v, pos_bead, H_system)
-    return pos_bead, v_bead
-end
-
-
-# ==========================================
-# 4. THE MASTER SOLVER
+# 2. THE MASTER SOLVER
 # ==========================================
 
 function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps, H_system; 
