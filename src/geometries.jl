@@ -4,7 +4,7 @@
 # ==========================================
 function plane_circle()
     @var x y
-    return "Circle", System([x^2 + y^2 - 1.0], variables=[x, y]), [0.0, 1.0]
+    return "Circle", System([x^2 + y^2 - 1.0], variables=[x, y]), [0.7071067811865476, 0.7071067811865476]
 end
 
 function plane_bicuspid()

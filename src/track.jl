@@ -629,13 +629,13 @@ end
 
 
 # ==========================================
-# 2. THE MASTER SOLVER
+# 2. THE MASTER SOLVER aka THE ENGINE
 # ==========================================
 
 function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps, H_system; 
                                   predictor = tangent_predictor, 
                                   corrector = hc_orthogonal_corrector,
-                                  field_type = :force,
+                                  field_type = :velocity,
                                   make_gif = false,
                                   filename = "dynamics.gif")
                                   
@@ -722,3 +722,270 @@ end
 # # println("Final position (velocity field): ", history_vf[end])
 
 
+
+# """
+# Runs a constrained physics simulation on a specific geometry and prints a detailed diagnostic summary.
+
+# Arguments:
+# - `name`: String name of the geometry (e.g., "3D Sphere")
+# - `sys`: HomotopyContinuation System representing the manifold
+# - `p0`: Initial starting coordinates of the bead
+# - `vector_field`: The vector field function to apply (e.g., gravity_force_field)
+
+# Keyword Arguments:
+# - `dt`: Time step size (default 0.05)
+# - `N`: Number of time steps (default 100)
+# """
+# function run_and_analyze(name, sys, p0, vector_field; dt=0.05, N=100)
+#     println("==================================================")
+#     println(" SIMULATION: $name")
+#     println("==================================================")
+
+#     dim = length(p0)
+#     v0 = zeros(dim) 
+
+#     # 1. Compile the Geometry for HomotopyOpt
+#     vars = variables(sys)
+#     eqs = expressions(sys)
+#     current_variety = ConstraintVariety(vars, eqs, p0)
+
+#     # 2. Wrap the corrector to bypass the keyword argument error
+#     wrapped_corrector(p_t, p_prev, v_t, s; kwargs...) = 
+#         homotopyopt_ed_corrector(p_t, p_prev, v_t, s; variety=current_variety, kwargs...)
+
+#     # 3. Run the dynamics
+#     println("[Running Dynamics...]")
+#     history = run_constrained_dynamics(
+#         p0, v0, vector_field, dt, N, sys;
+#         predictor = tangent_predictor,
+#         corrector = wrapped_corrector,  
+#         field_type = :velocity,
+#         make_gif = false 
+#     )
+
+#     # 4. Detailed Results Analysis
+#     p_final = history[end]
+
+#     println("\n==================================================")
+#     println(" DETAILED RESULTS SUMMARY")
+#     println("==================================================")
+#     println("Total Time Steps (N) : ", N)
+#     println("Time Step Size (dt)  : ", dt)
+#     println("Total Simulated Time : ", round(N * dt, digits=2), " seconds")
+#     println("--------------------------------------------------")
+#     println("Initial Position (p0): ", round.(p0, digits=4))
+#     println("Final Position (pN)  : ", round.(p_final, digits=4))
+#     println("--------------------------------------------------")
+
+#     # Calculate Z-drop
+#     z_start = p0[end]
+#     z_final = p_final[end]
+#     drop_distance = z_start - z_final
+
+#     println("Starting Height (Z)  : ", round(z_start, digits=4))
+#     println("Final Height (Z)     : ", round(z_final, digits=4))
+#     println("Elevation Lost       : ", round(drop_distance, digits=4), " units")
+
+#     # Calculate actual arc-length traveled
+#     path_length = sum(norm(history[i] - history[i-1]) for i in 2:length(history))
+#     println("Total Path Length    : ", round(path_length, digits=4), " units traveled")
+#     println("==================================================\n")
+    
+#     return history
+# end
+
+# ==========================================================
+#  THE PUBLIC API: optimize
+# ==========================================================
+# """
+#     optimize(F::System, V::Function; p0=nothing, dt=0.1, max_steps=100, corrector=ed_retraction_corrector)
+
+# The high-level interface for Manifold Gradient Descent. 
+# - If p0 is not provided, it automatically finds a starting point on the manifold.
+# - Returns (final_point, trajectory_history).
+# """
+# function optimize(F::System, V::Function; 
+#                   p0=nothing, 
+#                   dt=0.1, 
+#                   max_steps=100, 
+#                   corrector=ed_retraction_corrector)
+    
+#     # 1. Setup the Geometry
+#     vars = variables(F)
+#     eqs = expressions(F)
+    
+#     # 2. HANDLE STARTING POINT (p0)
+#     start_p = if p0 === nothing
+#         println("[Info] No p0 provided. Computing Witness Set to find a starting point...")
+        
+#         # Compute the witness set for the manifold
+#         W = witness_set(F) 
+        
+#         # Extract all points from the witness set
+#         pts = solutions(W)
+        
+#         # Filter for points that are numerically real (imaginary part near zero)
+#         real_pts = [real(p) for p in pts if all(abs.(imag.(p)) .< 1e-8)]
+        
+#         if isempty(real_pts)
+#             error("Could not find any real points on the manifold component found by witness_set.")
+#         end
+        
+#         println("[Info] Found $(length(real_pts)) real points. Picking the first one.")
+#         real_pts[1]
+#     else
+#         float.(copy(p0))
+#     end
+    
+#     # 3. Compile the Variety for the Corrector
+#     current_variety = ConstraintVariety(vars, eqs, start_p)
+    
+#     # 4. Wrap the corrector
+#     wrapped_corrector(p_t, p_prev, v_t, s; kwargs...) = 
+#         corrector(p_t, p_prev, v_t, s; variety=current_variety, kwargs...)
+
+#     # 5. Call the Engine
+#     history = run_constrained_dynamics(
+#         start_p, 
+#         zeros(length(start_p)), 
+#         V, 
+#         dt, 
+#         max_steps, 
+#         F;
+#         predictor = tangent_predictor,
+#         corrector = wrapped_corrector,
+#         field_type = :velocity,
+#         make_gif = false
+#     )
+    
+#     return history[end], history
+# end
+
+
+"""
+    optimize(F::System, V::Function; p0=nothing, dt=0.1, max_steps=100, corrector=ed_retraction_corrector)
+
+The high-level interface for Manifold Gradient Descent. 
+- If p0 is not provided, it uses a Newton Pull-in method to find a real point on the manifold.
+"""
+function optimize(F::System, V::Function; 
+                  p0 = nothing, 
+                  dt = 0.1, 
+                  max_steps = 100, 
+                  corrector = ed_retraction_corrector,
+                  kwargs...) # <--- Slurps all extra settings
+    
+    vars = variables(F)
+    eqs = expressions(F)
+
+    # 1. INITIALIZATION: Uses kwargs if you want to override tol/max_iters
+    start_p = if p0 === nothing
+        println("[Info] Projecting random guess onto manifold...")
+        p_final, success = project_onto_manifold(F, randn(length(vars)); kwargs...)
+        
+        if !success
+            error("Initialization failed: Manifold projection did not converge.")
+        end
+        p_final
+    else
+        float.(copy(p0))
+    end
+    
+    # 2. SETUP: Compile variety and bake the corrector closure
+    current_variety = ConstraintVariety(vars, eqs, start_p)
+    
+    # We allow the corrector to take its own internal kwargs as well
+    wrapped_corrector(p_t, p_prev, v_t, s; corrector_kwargs...) = 
+        corrector(p_t, p_prev, v_t, s; variety=current_variety, corrector_kwargs...)
+
+    # 3. ENGINE: The splat operator (...) passes kwargs down to the loop
+    history = run_constrained_dynamics(
+        start_p, zeros(length(start_p)), V, dt, max_steps, F;
+        predictor = tangent_predictor,
+        corrector = wrapped_corrector,
+        field_type = :velocity,
+        make_gif = false,
+        kwargs... # <--- Splats the settings into the engine
+    )
+    
+    return history[end], history
+end
+
+"""
+    project_onto_manifold(F::System, guess::Vector; tol=1e-10, max_iters=100, kwargs...)
+
+Robust Newton-Raphson pull-in using Moore-Penrose pseudo-inverse.
+"""
+function project_onto_manifold(F::System, guess::Vector; tol=1e-10, max_iters=100, kwargs...)
+    p_curr = float.(copy(guess))
+    
+    for i in 1:max_iters
+        val = real.(F(p_curr))
+        if norm(val) < tol
+            return p_curr, true # Found the manifold
+        end
+        
+        Jx = real.(jacobian(F, p_curr))
+        # The Moore-Penrose step: Δp = -J⁺ * F(p)
+        p_curr -= pinv(Jx) * val 
+    end
+    
+    return p_curr, false # Convergence failed
+end
+
+
+# ==========================================================
+#  THE FULL REPORT GENERATOR: run_and_analyze
+# ==========================================================
+"""
+    run_and_analyze(name, sys, p0, vector_field; dt=0.05, N=100)
+
+Runs a simulation using `optimize` and prints a full diagnostic report
+including elevation loss and path length.
+
+Arguments:
+- `name`: String name of the geometry (e.g., "3D Sphere")
+- `sys`: HomotopyContinuation System representing the manifold
+- `p0`: Initial starting coordinates of the bead
+- `vector_field`: The vector field function to apply (e.g., gravity_force_field)
+
+Keyword Arguments:
+- `dt`: Time step size (default 0.05)
+- `N`: Number of time steps (default 100)
+"""
+function run_and_analyze(name, sys, p0, vector_field; dt=0.05, N=100)
+    println("==================================================")
+    println(" SIMULATION: $name")
+    println("==================================================")
+
+    # 1. Call the API (Zero code duplication!)
+    p_final, history = optimize(sys, vector_field; p0=p0, dt=dt, max_steps=N)
+
+    # 2. Detailed Results Analysis
+    println("\n==================================================")
+    println(" DETAILED RESULTS SUMMARY")
+    println("==================================================")
+    println("Total Time Steps (N) : ", N)
+    println("Time Step Size (dt)  : ", dt)
+    println("Total Simulated Time : ", round(N * dt, digits=2), " seconds")
+    println("--------------------------------------------------")
+    println("Initial Position (p0): ", round.(p0, digits=4))
+    println("Final Position (pN)  : ", round.(p_final, digits=4))
+    println("--------------------------------------------------")
+
+    # Calculate Elevation Lost (Assuming gravity pulls down on the last coordinate)
+    z_start = p0[end]
+    z_final = p_final[end]
+    drop_distance = z_start - z_final
+
+    println("Starting Height (Z)  : ", round(z_start, digits=4))
+    println("Final Height (Z)     : ", round(z_final, digits=4))
+    println("Elevation Lost       : ", round(drop_distance, digits=4), " units")
+
+    # Calculate actual arc-length traveled
+    path_length = sum(norm(history[i] - history[i-1]) for i in 2:length(history))
+    println("Total Path Length    : ", round(path_length, digits=4), " units traveled")
+    println("==================================================\n")
+    
+    return history
+end

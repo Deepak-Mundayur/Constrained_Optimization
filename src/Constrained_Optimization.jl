@@ -19,5 +19,7 @@ export gravity_force_field
 export ambient_predictor, tangent_predictor
 export hc_orthogonal_corrector, hc_parallel_corrector, ordinary_newton_corrector, moore_penrose_corrector, homotopyopt_ed_corrector
 export run_constrained_dynamics
+export get_geometry_suite, run_and_analyze, make_attractor_force
+export optimize
 
 end

@@ -63,12 +63,11 @@ end
 
 
 # HomotopyOpt (Heaton-Himmelmann ED Retraction)
-function homotopyopt_ed_corrector(pos_temp, pos_old, v, H_system; kwargs...)
-    vars = variables(H_system)
-    eqs = expressions(H_system)
-    V = ConstraintVariety(vars, eqs, pos_old)
+function ed_retraction_corrector(pos_temp, pos_old, v, H_system; variety=nothing, kwargs...)
+    # If the user passed a pre-compiled variety, use it! Otherwise, make one.
+    V = variety !== nothing ? variety : ConstraintVariety(variables(H_system), expressions(H_system), pos_old)
     
-    num_eqs = length(eqs)
+    num_eqs = length(expressions(H_system))
     V.EDTracker.startSolution = vcat(pos_old, zeros(num_eqs))
     
     step_vector = pos_temp - pos_old 
