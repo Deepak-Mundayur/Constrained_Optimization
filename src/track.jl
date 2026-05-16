@@ -637,9 +637,9 @@ function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps,
                                   corrector = hc_orthogonal_corrector,
                                   field_type = :velocity,
                                   make_gif = false,
-                                  filename = "dynamics.gif")
+                                  filename = "dynamics.gif",
+                                  stop_tol = 1e-6)
                                   
-    # Pre-compile the square systems so correctors can use them instantly without allocating
     F_ortho = build_projection_mechanics(H_system)
     F_parallel = build_parallel_transport_mechanics(H_system)
 
@@ -651,7 +651,7 @@ function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps,
     anim = nothing
     if make_gif
         plt = plot_variety(H_system)
-        scatter!(plt, [pos_bead[1]], [pos_bead[2]], color=:red, markersize=6, label="Start Point", xlim=(-2.0, 2.0), ylim=(-2.0,2.0))
+        scatter!(plt, [pos_bead[1]], [pos_bead[2]], color=:red, markersize=6, label="Start")
         anim = Animation()
         frame(anim, plt) 
     end
@@ -660,13 +660,8 @@ function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps,
     for i in 1:N_steps
         field_value = vector_field(pos_bead)
         
-        # 1. PREDICTOR STEP (Function specialization ensures zero branching overhead)
+        # 1. PREDICTOR STEP 
         pos_temp, v_bead = predictor(pos_bead, v_bead, field_value, dt, H_system, field_type)
-
-        if make_gif
-            scatter!(plt, [pos_temp[1]], [pos_temp[2]], color=:green, markersize=4, label= i==1 ? "Predicted Point" : "")
-            frame(anim, plt)
-        end
 
         # 2. CORRECTOR STEP 
         pos_bead, v_bead = corrector(pos_temp, pos_bead, v_bead, H_system; F_ortho=F_ortho, F_parallel=F_parallel)
@@ -674,8 +669,17 @@ function run_constrained_dynamics(pos_start, v_start, vector_field, dt, N_steps,
         push!(history, copy(pos_bead))
 
         if make_gif
-            scatter!(plt, [pos_bead[1]], [pos_bead[2]], color=:blue, markersize=4, label= i==1 ? "Corrected Point" : "")
+            scatter!(plt, [pos_bead[1]], [pos_bead[2]], color=:blue, markersize=4, label="")
             frame(anim, plt)
+        end
+
+        # ---------------------------------------------------------
+        # 3. EARLY STOPPING CHECK (Goal 3d)
+        # ---------------------------------------------------------
+        step_distance = norm(history[end] - history[end-1])
+        if step_distance < stop_tol
+            println("Convergence reached at step $i. The point stopped moving.")
+            break
         end
     end
     
@@ -873,14 +877,14 @@ function optimize(F::System, V::Function;
                   dt = 0.1, 
                   max_steps = 100, 
                   corrector = ed_retraction_corrector,
-                  kwargs...) # <--- Slurps all extra settings
-    
+                  kwargs...) 
+
     vars = variables(F)
     eqs = expressions(F)
 
     # 1. INITIALIZATION: Uses kwargs if you want to override tol/max_iters
     start_p = if p0 === nothing
-        println("[Info] Projecting random guess onto manifold...")
+        println("Projecting random guess onto manifold...")
         p_final, success = project_onto_manifold(F, randn(length(vars)); kwargs...)
         
         if !success
@@ -898,14 +902,14 @@ function optimize(F::System, V::Function;
     wrapped_corrector(p_t, p_prev, v_t, s; corrector_kwargs...) = 
         corrector(p_t, p_prev, v_t, s; variety=current_variety, corrector_kwargs...)
 
-    # 3. ENGINE: The splat operator (...) passes kwargs down to the loop
+    # 3. ENGINE
     history = run_constrained_dynamics(
         start_p, zeros(length(start_p)), V, dt, max_steps, F;
         predictor = tangent_predictor,
         corrector = wrapped_corrector,
         field_type = :velocity,
         make_gif = false,
-        kwargs... # <--- Splats the settings into the engine
+        kwargs... 
     )
     
     return history[end], history
