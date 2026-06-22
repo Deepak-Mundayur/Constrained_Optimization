@@ -113,3 +113,178 @@ function get_geometry_suite()
         ]
     )
 end
+
+
+# function matroid_bounded_points(n_points::Int, bounds::Tuple{Tuple{Float64, Float64}, Tuple{Float64, Float64}})
+#     (xmin, xmax), (ymin, ymax) = bounds
+    
+#     # Primary variables: [x1, y1, x2, y2, ...]
+#     vars_xy = Variable[]
+#     for i in 1:n_points
+#         push!(vars_xy, Variable("x$i"))
+#         push!(vars_xy, Variable("y$i"))
+#     end
+    
+#     # Slack variables: 4 per point (Left, Right, Bottom, Top)
+#     vars_slacks = Variable[]
+#     for i in 1:n_points
+#         push!(vars_slacks, Variable("z_L$i"))
+#         push!(vars_slacks, Variable("z_R$i"))
+#         push!(vars_slacks, Variable("z_B$i"))
+#         push!(vars_slacks, Variable("z_T$i"))
+#     end
+    
+#     eqs = Expression[]
+#     for i in 1:n_points
+#         idx_x = 2*i - 1
+#         idx_y = 2*i
+        
+#         x_var = vars_xy[idx_x]
+#         y_var = vars_xy[idx_y]
+        
+#         z_L = vars_slacks[4*i - 3]
+#         z_R = vars_slacks[4*i - 2]
+#         z_B = vars_slacks[4*i - 1]
+#         z_T = vars_slacks[4*i]
+        
+#         # Enforcing x != xmin, x != xmax, etc.
+#         push!(eqs, z_L * (x_var - xmin) - 1.0)
+#         push!(eqs, z_R * (xmax - x_var) - 1.0)
+#         push!(eqs, z_B * (y_var - ymin) - 1.0)
+#         push!(eqs, z_T * (ymax - y_var) - 1.0)
+#     end
+    
+#     all_vars = vcat(vars_xy, vars_slacks)
+    
+#     # Calculate a valid starting point p0 safely inside the box
+#     x_start = (xmin + xmax) / 2.0
+#     y_start = (ymin + ymax) / 2.0
+    
+#     p0 = Float64[]
+#     for i in 1:n_points
+#         # Slight random perturbation so points don't start perfectly on top of each other
+#         xi = x_start + 0.1 * randn()
+#         yi = y_start + 0.1 * randn()
+#         push!(p0, xi)
+#         push!(p0, yi)
+#     end
+    
+#     # Populate initial values for the slack variables to exactly satisfy the equations
+#     for i in 1:n_points
+#         xi = p0[2*i - 1]
+#         yi = p0[2*i]
+#         push!(p0, 1.0 / (xi - xmin))
+#         push!(p0, 1.0 / (xmax - xi))
+#         push!(p0, 1.0 / (yi - ymin))
+#         push!(p0, 1.0 / (ymax - yi))
+#     end
+    
+#     return "Matroid Bounding Box ($n_points pts)", System(eqs, variables=all_vars), p0
+# end
+
+
+function matroid_collinearity_bounded_system(n_points::Int, bounds, collinear_sets::Vector{NTuple{3, Int}})
+    (xmin, xmax), (ymin, ymax) = bounds
+    
+    # Primary variables: n points (x, y)
+    vars_xy = Variable[]
+    for i in 1:n_points
+        push!(vars_xy, Variable("x$i"))
+        push!(vars_xy, Variable("y$i"))
+    end
+    
+    # Slack variables: 4 per point (Left, Right, Bottom, Top)
+    vars_slacks = Variable[]
+    for i in 1:n_points
+        push!(vars_slacks, Variable("z_L$i"))
+        push!(vars_slacks, Variable("z_R$i"))
+        push!(vars_slacks, Variable("z_B$i"))
+        push!(vars_slacks, Variable("z_T$i"))
+    end
+    
+    eqs = Expression[]
+    
+    #  Bounding Box Equations
+    for i in 1:n_points
+        idx_x = 2*i - 1; idx_y = 2*i
+        x_var = vars_xy[idx_x]; y_var = vars_xy[idx_y]
+        
+        z_L = vars_slacks[4*i - 3]; z_R = vars_slacks[4*i - 2]
+        z_B = vars_slacks[4*i - 1]; z_T = vars_slacks[4*i]
+        
+        push!(eqs, z_L * (x_var - xmin) - 1.0)
+        push!(eqs, z_R * (xmax - x_var) - 1.0)
+        push!(eqs, z_B * (y_var - ymin) - 1.0)
+        push!(eqs, z_T * (ymax - y_var) - 1.0)
+    end
+    
+    #  Strict Collinearity Equations
+    for (i, j, k) in collinear_sets
+        xi, yi = vars_xy[2*i - 1], vars_xy[2*i]
+        xj, yj = vars_xy[2*j - 1], vars_xy[2*j]
+        xk, yk = vars_xy[2*k - 1], vars_xy[2*k]
+        
+        # Cross product / determinant constraint for 2D collinearity
+        collinear_eq = (xj - xi)*(yk - yi) - (yj - yi)*(xk - xi)
+        push!(eqs, collinear_eq)
+    end
+    
+    all_vars = vcat(vars_xy, vars_slacks)
+    sys = System(eqs, variables=all_vars)
+    
+    return "Collinear Repelling System", sys
+end
+
+
+
+function matroid_collinearity_system(n_points::Int, collinear_sets::Vector{NTuple{3, Int}}; hard_non_collinearity_relns=false)
+    # Primary variables: n points (x, y)
+    vars_xy = Variable[]
+    for i in 1:n_points
+        push!(vars_xy, Variable("x$i"))
+        push!(vars_xy, Variable("y$i"))
+    end
+    
+    eqs = Expression[]
+    
+    # Collinearity Equations
+    for (i, j, k) in collinear_sets
+        xi, yi = vars_xy[2*i - 1], vars_xy[2*i]
+        xj, yj = vars_xy[2*j - 1], vars_xy[2*j]
+        xk, yk = vars_xy[2*k - 1], vars_xy[2*k]
+        
+        collinear_eq = (xj - xi)*(yk - yi) - (yj - yi)*(xk - xi)
+        push!(eqs, collinear_eq)
+    end
+    
+    # The non-collinearity conditions : Optional and only added when explicitly mentioned as keyword argument
+    if hard_non_collinearity_relns && n_points >= 5
+        t_var = Variable("t_noncollinear")
+        
+        x1, y1 = vars_xy[1], vars_xy[2]
+        x3, y3 = vars_xy[5], vars_xy[6]
+        x5, y5 = vars_xy[9], vars_xy[10]
+        
+        det_135 = (x3 - x1)*(y5 - y1) - (y3 - y1)*(x5 - x1)
+        push!(eqs, t_var * det_135 - 1.0)
+        
+        return "Collinearity system", System(eqs, variables=vcat(vars_xy, [t_var]))
+    end
+    
+    return "Collinearity system", System(eqs, variables=vars_xy)
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

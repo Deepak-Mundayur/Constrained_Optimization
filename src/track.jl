@@ -579,23 +579,35 @@ function project_to_tangent(v, pos, H_system::System)
 end
 
 """
-Builds the parametrized orthogonal projection system.
+Builds the universal parametrized orthogonal projection system using Lagrange multipliers.
+Works for any m equations and n variables.
 """
 function build_projection_mechanics(H_system::System)
     vars = variables(H_system)
-    H_expr = expressions(H_system)[1] 
+    eqs = expressions(H_system)
+    n_vars = length(vars)
+    m_eqs = length(eqs)
     
-    @var p[1:2]
+    # p will be our target point parameters (k = n_vars)
+    @var p[1:n_vars]
     
-    dH_dx1 = differentiate(H_expr, vars[1])
-    dH_dx2 = differentiate(H_expr, vars[2])
+    # λ will be our Lagrange multipliers (m_eqs of them)
+    @var λ[1:m_eqs]
     
-    perp_expr = (vars[1] - p[1]) * dH_dx2 - (vars[2] - p[2]) * dH_dx1
+    # The Jacobian of the constraint system (m x n matrix)
+    J = differentiate(eqs, vars)
     
-    F_system = System([H_expr, perp_expr], variables=vars, parameters=p)
+    # Orthogonality condition: (x - p) + J^T * λ = 0
+    # We use transpose(J) to get an n x m matrix multiplying the m-length λ vector
+    ortho_eqs = (vars .- p) .+ transpose(J) * λ
+    
+    # Combine constraints and orthogonality into a square (n+m) x (n+m) system
+    full_eqs = vcat(eqs, ortho_eqs)
+    full_vars = vcat(vars, λ)
+    
+    F_system = System(full_eqs, variables=full_vars, parameters=p)
     return F_system
 end
-
 """
 Builds the square parametrized system for parallel transport projection.
 """
@@ -867,13 +879,15 @@ end
 
 
 """
-    optimize(F::System, V::Function; p0=nothing, dt=0.1, max_steps=100, corrector=ed_retraction_corrector)
+    optimize(F::System, V::Function; p0=nothing, guess=nothing, dt=0.1, max_steps=100, corrector=ed_retraction_corrector)
 
 The high-level interface for Manifold Gradient Descent. 
 - If p0 is not provided, it uses a Newton Pull-in method to find a real point on the manifold.
+- Pass `guess` to provide a starting point for the Newton Pull-in.
 """
 function optimize(F::System, V::Function; 
                   p0 = nothing, 
+                  guess = nothing,
                   dt = 0.1, 
                   max_steps = 100, 
                   corrector = ed_retraction_corrector,
@@ -882,10 +896,15 @@ function optimize(F::System, V::Function;
     vars = variables(F)
     eqs = expressions(F)
 
-    # 1. INITIALIZATION: Uses kwargs if you want to override tol/max_iters
+    # 1. INITIALIZATION
     start_p = if p0 === nothing
-        println("Projecting random guess onto manifold...")
-        p_final, success = project_onto_manifold(F, randn(length(vars)); kwargs...)
+        println("Projecting guess onto manifold...")
+        
+        # Use the provided guess, otherwise default to random noise
+        init_guess = guess !== nothing ? float.(copy(guess)) : randn(length(vars))
+        
+        # We pass kwargs... here so tolerances (like tol=1e-8) can still reach the projection
+        p_final, success = project_onto_manifold(F, init_guess; kwargs...)
         
         if !success
             error("Initialization failed: Manifold projection did not converge.")
@@ -898,9 +917,9 @@ function optimize(F::System, V::Function;
     # 2. SETUP: Compile variety and bake the corrector closure
     current_variety = ConstraintVariety(vars, eqs, start_p)
     
-    # We allow the corrector to take its own internal kwargs as well
+    # Wrap the corrector and pass any relevant kwargs (like max iterations) into it
     wrapped_corrector(p_t, p_prev, v_t, s; corrector_kwargs...) = 
-        corrector(p_t, p_prev, v_t, s; variety=current_variety, corrector_kwargs...)
+        corrector(p_t, p_prev, v_t, s; variety=current_variety, kwargs..., corrector_kwargs...)
 
     # 3. ENGINE
     history = run_constrained_dynamics(
@@ -908,8 +927,8 @@ function optimize(F::System, V::Function;
         predictor = tangent_predictor,
         corrector = wrapped_corrector,
         field_type = :velocity,
-        make_gif = false,
-        kwargs... 
+        make_gif = false
+        # FIX: Removed the blind kwargs... from here!
     )
     
     return history[end], history
@@ -992,4 +1011,223 @@ function run_and_analyze(name, sys, p0, vector_field; dt=0.05, N=100)
     println("==================================================\n")
     
     return history
+end
+
+
+
+# """
+#     run_and_animate_collinear_system(n_pts, bounds, collinear_sets; kwargs...)
+
+# Creates the matroid geometry, defines the force field, finds an equilibrium, and outputs a GIF.
+# """
+# function run_and_animate_collinear_system(n_pts::Int, bounds, collinear_sets; 
+#                                           dt=0.01, max_steps=300, 
+#                                           k_p=10.0, k_w=10.0,
+#                                           filename="collinear_repulsion.gif", fps=15)
+    
+#     (x_min, x_max), (y_min, y_max) = bounds
+
+#     # 1. Create the Matroid collinear system (with slack variables)
+#     name, F_sys = matroid_collinear_bounded_points(n_pts, bounds, collinear_sets)
+    
+#     # Check exactly how many variables the system generated (6n for the matroid)
+#     n_vars = length(variables(F_sys))
+    
+#     # 2. Create the inverse-square vector field, sized to match the system
+#     V = make_repelling_points_force(n_pts, bounds; k_p=k_p, k_w=k_w, total_vars=n_vars)
+    
+#    # 3. Generate a safe mathematical guess (Spaced in a circle)
+#     guess = Float64[]
+    
+#     # Calculate a radius that fits comfortably inside the bounds
+#     radius = min(x_max - x_min, y_max - y_min) * 0.35
+#     center_x = (x_max + x_min) / 2.0
+#     center_y = (y_max + y_min) / 2.0
+    
+#     for i in 1:n_pts
+#         # Distribute points evenly around a circle
+#         angle = 2 * pi * i / n_pts
+#         push!(guess, center_x + radius * cos(angle))
+#         push!(guess, center_y + radius * sin(angle))
+#     end
+    
+#     # Fill remaining slack variables if using the hard-boundary matroid system
+#     num_slacks = n_vars - length(guess)
+#     if num_slacks > 0
+#         append!(guess, fill(0.5, num_slacks))
+#     end
+    
+#     # 4. Run the optimizer to get the history
+#     final_point, history = optimize(F_sys, V; guess=guess, dt=dt, max_steps=max_steps, corrector = moore_penrose_corrector)
+    
+#     # 5. Plot the GIF
+#     println("Generating animation frames...")
+#     anim = Animation()
+    
+#     for (step_idx, state) in enumerate(history)
+#         xs = [state[2*i - 1] for i in 1:n_pts]
+#         ys = [state[2*i] for i in 1:n_pts]
+        
+#         plt = plot(
+#             xlim=(x_min - 1.0, x_max + 1.0), 
+#             ylim=(y_min - 1.0, y_max + 1.0),
+#             aspect_ratio=:equal,
+#             legend=false,
+#             title="Collinear Repulsion (Step $step_idx)",
+#             grid=false
+#         )
+        
+#         # Draw the Bounding Box
+#         plot!(plt, [x_min, x_max, x_max, x_min, x_min], 
+#                    [y_min, y_min, y_max, y_max, y_min], 
+#                    color=:red, linewidth=2, linestyle=:dash)
+        
+#         # Draw ALL Collinearity Relations
+#         for (p1, p2, p3) in collinear_sets
+#             dx = xs[p2] - xs[p1]
+#             dy = ys[p2] - ys[p1]
+            
+#             # Safety check: If p1 and p2 are completely crushed together 
+#             # (like in step 1), use p3 to calculate the line instead
+#             if abs(dx) < 1e-5 && abs(dy) < 1e-5
+#                 dx = xs[p3] - xs[p1]
+#                 dy = ys[p3] - ys[p1]
+#             end
+            
+#             # If all 3 points are crushed into the exact same pixel, skip the line for this frame
+#             if abs(dx) < 1e-5 && abs(dy) < 1e-5
+#                 continue
+#             end
+
+#             # Draw the infinite line across the screen
+#             if abs(dx) > 1e-7
+#                 slope = dy / dx
+#                 intercept = ys[p1] - slope * xs[p1]
+#                 line_xs = [x_min - 2.0, x_max + 2.0]
+#                 line_ys = slope .* line_xs .+ intercept
+#                 plot!(plt, line_xs, line_ys, color=:gray, alpha=0.4, linewidth=1.5)
+#             else
+#                 # Handle perfectly vertical lines
+#                 plot!(plt, [xs[p1], xs[p1]], [y_min - 2.0, y_max + 2.0], color=:gray, alpha=0.4, linewidth=1.5)
+#             end
+#         end
+
+#         # Scatter the beads
+#         scatter!(plt, xs, ys, color=:blue, markersize=8)
+#         frame(anim, plt)
+#     end
+    
+#     gif(anim, filename, fps=fps)
+#     println("Animation fully compiled and saved to: $filename")
+    
+#     return final_point, history
+# end
+
+
+"""
+    run_and_animate_collinear_system(n_pts, bounds, collinear_sets; kwargs...)
+
+Creates the matroid geometry, defines the force field, finds an equilibrium, and outputs a GIF.
+"""
+function run_and_animate_collinear_system(n_pts::Int, bounds, collinear_sets; 
+                                          dt=0.01, max_steps=300, 
+                                          k_p=10.0, k_wall=50.0,
+                                          filename="collinear_repulsion.gif", fps=15,
+                                          show_guess = false,
+                                          framestyle = :none,
+                                          hard_non_collinearity_relns = false)
+    
+    (x_min, x_max), (y_min, y_max) = bounds
+
+    
+    _,F_sys = matroid_collinearity_system(n_pts, collinear_sets; hard_non_collinearity_relns=hard_non_collinearity_relns)
+    n_vars = length(variables(F_sys))
+    
+    V = make_bounded_repelling_force(n_pts, bounds; k_p=k_p, k_wall=k_wall)
+    
+    guess = Float64[]
+    
+    radius = min(x_max - x_min, y_max - y_min) * 0.35
+    center_x = (x_max + x_min) / 2.0
+    center_y = (y_max + y_min) / 2.0
+    
+    for i in 1:n_pts
+        # Distribute points evenly around a circle
+        angle = 2 * pi * i / n_pts
+        push!(guess, center_x + radius * cos(angle))
+        push!(guess, center_y + radius * sin(angle))
+    end
+    
+    # Fill remaining slack variables if using the hard-boundary matroid system
+    num_slacks = n_vars - length(guess)
+    if num_slacks > 0
+        append!(guess, fill(0.5, num_slacks))
+    end
+    
+    guess_xs = [guess[2*i - 1] for i in 1:n_pts]
+    guess_ys = [guess[2*i] for i in 1:n_pts]
+    
+    final_point, history = optimize(F_sys, V; guess=guess, dt=dt, max_steps=max_steps, corrector = moore_penrose_corrector)
+    anim = Animation()
+    
+    for (step_idx, state) in enumerate(history)
+        xs = [state[2*i - 1] for i in 1:n_pts]
+        ys = [state[2*i] for i in 1:n_pts]
+        
+        plt = plot(
+            xlim=(x_min - 1.0, x_max + 1.0), 
+            ylim=(y_min - 1.0, y_max + 1.0),
+            aspect_ratio=:equal,
+            legend=false,
+            title="Collinear Repulsion (Step $step_idx)",
+            framestyle = framestyle
+        )
+        
+        plot!(plt, [x_min, x_max, x_max, x_min, x_min], 
+                   [y_min, y_min, y_max, y_max, y_min], 
+                   color=:red, linewidth=2, linestyle=:dash)
+        
+        for (p1, p2, p3) in collinear_sets
+            dx = xs[p2] - xs[p1]
+            dy = ys[p2] - ys[p1]
+            
+            # Safety check: If p1 and p2 are completely crushed together 
+            # (like in step 1), use p3 to calculate the line instead
+            if abs(dx) < 1e-5 && abs(dy) < 1e-5
+                dx = xs[p3] - xs[p1]
+                dy = ys[p3] - ys[p1]
+            end
+            
+            # If all 3 points are crushed into the exact same pixel, skip the line for this frame
+            if abs(dx) < 1e-5 && abs(dy) < 1e-5
+                continue
+            end
+
+            if abs(dx) > 1e-7
+                slope = dy / dx
+                intercept = ys[p1] - slope * xs[p1]
+                line_xs = [x_min - 2.0, x_max + 2.0]
+                line_ys = slope .* line_xs .+ intercept
+                plot!(plt, line_xs, line_ys, color=:gray, alpha=0.4, linewidth=1.5)
+            else
+                # Handle perfectly vertical lines
+                plot!(plt, [xs[p1], xs[p1]], [y_min - 2.0, y_max + 2.0], color=:gray, alpha=0.4, linewidth=1.5)
+            end
+        end
+
+        # Scatter the initial guess in the background
+        if show_guess
+            scatter!(plt, guess_xs, guess_ys, color=:lightgray, markersize=8, alpha=0.5)
+        end 
+
+        # Scatter the active beads
+        scatter!(plt, xs, ys, color=:blue, markersize=8)
+        
+        frame(anim, plt)
+    end
+    
+    gif(anim, filename, fps=fps)
+    println("Animation saved to: $filename")
+    
+    return final_point, history
 end

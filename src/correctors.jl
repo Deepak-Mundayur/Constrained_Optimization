@@ -1,12 +1,42 @@
 # ==========================================
 # CORRECTORS (Projecting back to the manifold)
 # ==========================================
-# Note: Every corrector accepts `kwargs...` so the master loop can blindly pass 
-# F_ortho and F_parallel without causing MethodErrors if a corrector doesn't need them.
+
 
 function hc_orthogonal_corrector(pos_temp, pos_old, v, H_system; F_ortho, kwargs...)
-    result = solve(F_ortho, [pos_old]; start_parameters=pos_old, target_parameters=pos_temp, show_progress=false)
-    pos_bead = real.(solutions(result)[1])
+    n_vars = length(pos_old)
+    m_eqs = length(expressions(H_system))
+    
+    # Pad the starting position with zeros for the m Lagrange multipliers
+    start_sol = vcat(pos_old, zeros(Float64, m_eqs))
+    
+    result = solve(F_ortho, [start_sol]; start_parameters=pos_old, target_parameters=pos_temp, show_progress=false)
+    
+    # Extract only the first n_vars from the tracked solution (ignoring the λ values)
+    tracked_full = real.(solutions(result)[1])
+    pos_bead = tracked_full[1:n_vars]
+    
+    v_bead = project_to_tangent(v, pos_bead, H_system)
+    return pos_bead, v_bead
+end
+
+function ordinary_newton_corrector(pos_temp, pos_old, v, H_system; F_ortho, kwargs...)
+    n_vars = length(pos_old)
+    m_eqs = length(expressions(H_system))
+    
+    pos_full = vcat(float.(copy(pos_temp)), zeros(Float64, m_eqs))
+    target_params = pos_temp 
+
+    for iter in 1:50
+        val = real.(F_ortho(pos_full, target_params))
+        if norm(val) < 1e-10
+            break
+        end
+        Jx = real.(jacobian(F_ortho, pos_full, target_params))
+        pos_full = pos_full - inv(Jx) * val
+    end
+
+    pos_bead = pos_full[1:n_vars]
     v_bead = project_to_tangent(v, pos_bead, H_system)
     return pos_bead, v_bead
 end
@@ -24,24 +54,6 @@ function hc_parallel_corrector(pos_temp, pos_old, v, H_system; F_parallel, kwarg
     return pos_bead, v_bead
 end
 
-function ordinary_newton_corrector(pos_temp, pos_old, v, H_system; F_ortho, kwargs...)
-    # Standard Newton-Raphson jumping straight to the solution of the square system
-    pos_bead = float.(copy(pos_temp))
-    target_params = pos_temp 
-    
-    for iter in 1:50
-        val = real.(F_ortho(pos_bead, target_params))
-        if norm(val) < 1e-10
-            break
-        end
-        # Use standard matrix inverse since F_ortho is a square 2x2 system
-        Jx = real.(jacobian(F_ortho, pos_bead, target_params))
-        pos_bead = pos_bead - inv(Jx) * val
-    end
-    
-    v_bead = project_to_tangent(v, pos_bead, H_system)
-    return pos_bead, v_bead
-end
 
 function moore_penrose_corrector(pos_temp, pos_old, v, H_system; kwargs...)
     # Underdetermined Newton-Raphson acting directly on the manifold constraint H(x) = 0
