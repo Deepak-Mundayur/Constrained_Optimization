@@ -138,6 +138,45 @@ function matroid_collinearity_bounded_system(n_points::Int, bounds, collinear_se
 end
 
 
+# function matroid_collinearity_system(n_points::Int, collinear_sets::Vector{NTuple{3, Int}}; hard_non_collinearity_relns=false)
+#     # Primary variables: n points (x, y)
+#     vars_xy = Variable[]
+#     for i in 1:n_points
+#         push!(vars_xy, Variable("x$i"))
+#         push!(vars_xy, Variable("y$i"))
+#     end
+    
+#     eqs = Expression[]
+    
+#     # Collinearity Equations
+#     for (i, j, k) in collinear_sets
+#         xi, yi = vars_xy[2*i - 1], vars_xy[2*i]
+#         xj, yj = vars_xy[2*j - 1], vars_xy[2*j]
+#         xk, yk = vars_xy[2*k - 1], vars_xy[2*k]
+        
+#         collinear_eq = (xj - xi)*(yk - yi) - (yj - yi)*(xk - xi)
+#         push!(eqs, collinear_eq)
+#     end
+    
+#     # The non-collinearity conditions : Optional and only added when explicitly mentioned as keyword argument
+#     if hard_non_collinearity_relns && n_points >= 5
+#         for 
+#         t_var = Variable("t_noncollinear")
+        
+#         x1, y1 = vars_xy[1], vars_xy[2]
+#         x3, y3 = vars_xy[5], vars_xy[6]
+#         x5, y5 = vars_xy[9], vars_xy[10]
+        
+#         det_135 = (x3 - x1)*(y5 - y1) - (y3 - y1)*(x5 - x1)
+#         push!(eqs, t_var * det_135 - 1.0)
+        
+#         return "Collinearity system", System(eqs, variables=vcat(vars_xy, [t_var]))
+#     end
+    
+#     return "Collinearity system", System(eqs, variables=vars_xy)
+# end
+
+
 function matroid_collinearity_system(n_points::Int, collinear_sets::Vector{NTuple{3, Int}}; hard_non_collinearity_relns=false)
     # Primary variables: n points (x, y)
     vars_xy = Variable[]
@@ -147,6 +186,10 @@ function matroid_collinearity_system(n_points::Int, collinear_sets::Vector{NTupl
     end
     
     eqs = Expression[]
+    
+    # Standardize collinear_sets for easy O(1) lookup. 
+    # Sorting ensures (1, 2, 3) is treated the same as (3, 2, 1).
+    collinear_lookup = Set(Tuple(sort([c...])) for c in collinear_sets)
     
     # Collinearity Equations
     for (i, j, k) in collinear_sets
@@ -158,18 +201,32 @@ function matroid_collinearity_system(n_points::Int, collinear_sets::Vector{NTupl
         push!(eqs, collinear_eq)
     end
     
-    # The non-collinearity conditions : Optional and only added when explicitly mentioned as keyword argument
-    if hard_non_collinearity_relns && n_points >= 5
-        t_var = Variable("t_noncollinear")
-        
-        x1, y1 = vars_xy[1], vars_xy[2]
-        x3, y3 = vars_xy[5], vars_xy[6]
-        x5, y5 = vars_xy[9], vars_xy[10]
-        
-        det_135 = (x3 - x1)*(y5 - y1) - (y3 - y1)*(x5 - x1)
-        push!(eqs, t_var * det_135 - 1.0)
-        
-        return "Collinearity system", System(eqs, variables=vcat(vars_xy, [t_var]))
+    # The non-collinearity conditions
+    t_vars = Variable[]
+    
+    if hard_non_collinearity_relns
+        # Iterate over all unique combinations of 3 points
+        for i in 1:(n_points - 2)
+            for j in (i + 1):(n_points - 1)
+                for k in (j + 1):n_points
+                    
+                    # If this triplet is NOT meant to be collinear, force the determinant away from 0
+                    if !((i, j, k) in collinear_lookup)
+                        # Create a unique slack variable for this specific non-collinear triplet
+                        t_var = Variable("t_$(i)_$(j)_$(k)")
+                        push!(t_vars, t_var)
+                        
+                        xi, yi = vars_xy[2*i - 1], vars_xy[2*i]
+                        xj, yj = vars_xy[2*j - 1], vars_xy[2*j]
+                        xk, yk = vars_xy[2*k - 1], vars_xy[2*k]
+                        
+                        det_ijk = (xj - xi)*(yk - yi) - (yj - yi)*(xk - xi)
+                        push!(eqs, t_var * det_ijk - 1.0)
+                    end
+                end
+            end
+        end
+        return "Collinearity system", System(eqs, variables=vcat(vars_xy, t_vars))
     end
     
     return "Collinearity system", System(eqs, variables=vars_xy)
