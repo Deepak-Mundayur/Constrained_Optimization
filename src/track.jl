@@ -879,9 +879,9 @@ end
 
 
 """
-    optimize(F::System, V::Function; p0=nothing, guess=nothing, dt=0.1, max_steps=100, corrector=ed_retraction_corrector)
+    optimize(F::System, V::Function; p0=nothing, guess=nothing, dt=0.1, max_steps=100, corrector=moore_penrose_corrector)
 
-The high-level interface for Manifold Gradient Descent. 
+The interface for optimization on the variety defined by F. 
 - If p0 is not provided, it uses a Newton Pull-in method to find a real point on the manifold.
 - Pass `guess` to provide a starting point for the Newton Pull-in.
 """
@@ -890,7 +890,7 @@ function optimize(F::System, V::Function;
                   guess = nothing,
                   dt = 0.1, 
                   max_steps = 100, 
-                  corrector = ed_retraction_corrector,
+                  corrector = moore_penrose_corrector,
                   kwargs...) 
 
     vars = variables(F)
@@ -913,13 +913,34 @@ function optimize(F::System, V::Function;
     else
         float.(copy(p0))
     end
+
+    #Alternate Initialization
+
+    # start_p = if p0 === nothing
+    #     println("Projecting guess onto complex manifold and pulling to real locus...")
+        
+    #     # 1. Cast the guess or random noise into the Complex plane
+    #     init_guess = guess !== nothing ? complex.(float.(copy(guess))) : complex.(randn(length(vars)), randn(length(vars)))
+        
+    #     # 2. Call the new complex routine instead of the standard projection
+    #     p_final, success = complex_to_real_pull_in(F, init_guess; dt=dt, kwargs...)
+        
+    #     if !success
+    #         error("Initialization failed: Could not pull the complex point to the real locus.")
+    #     end
+        
+    #     # 3. Cast the result back to Real floats before handing off to the engine
+    #     real.(p_final)
+    # else
+    #     float.(copy(p0))
+    # end
     
     # 2. SETUP: Compile variety and bake the corrector closure
-    current_variety = ConstraintVariety(vars, eqs, start_p)
+    # current_variety = ConstraintVariety(vars, eqs, start_p)
     
     # Wrap the corrector and pass any relevant kwargs (like max iterations) into it
     wrapped_corrector(p_t, p_prev, v_t, s; corrector_kwargs...) = 
-        corrector(p_t, p_prev, v_t, s; variety=current_variety, kwargs..., corrector_kwargs...)
+        corrector(p_t, p_prev, v_t, s; system = F, kwargs..., corrector_kwargs...)
 
     # 3. ENGINE
     history = run_constrained_dynamics(
@@ -954,6 +975,63 @@ function project_onto_manifold(F::System, guess::Vector; tol=1e-10, max_iters=10
     end
     
     return p_curr, false # Convergence failed
+end
+
+
+function complex_to_real_pull_in(F::System, guess::Vector{<:Number}; dt=0.1, tol=1e-8, max_iters=500)
+    # 1. Promote guess to Complex if it isn't already
+    z = complex.(float.(copy(guess)))
+    n_vars = length(z)
+    
+    # 2. Initial projection onto the COMPLEX variety
+    for _ in 1:20
+        val = F(z)
+        if norm(val) < 1e-12
+            break
+        end
+        J = jacobian(F, z)
+        z = z - pinv(J) * val
+    end
+    
+    # 3. Vector field flow on the complex variety to minimize imaginary part
+    for iter in 1:max_iters
+        im_z = imag.(z)
+        
+        # Check if we have hit the real locus
+        if norm(im_z) < tol
+            println("[Info] Found real point on variety after $iter steps.")
+            return real.(z), true
+        end
+        
+        # The vector field: pull imaginary parts to zero
+        v_target = -im * im_z 
+        
+        # Project vector field onto the complex tangent space
+        J = jacobian(F, z)
+        
+        # Complex projection matrix: P = I - J^+ J
+        # Note: pinv handles complex matrices using the conjugate transpose natively
+        P = I - pinv(J) * J 
+        v_tangent = P * v_target
+        
+        # Predictor Step
+        z_temp = z + dt * v_tangent
+        
+        # Corrector Step (Complex Newton-Raphson)
+        for _ in 1:20
+            val = F(z_temp)
+            if norm(val) < 1e-12
+                break
+            end
+            J_temp = jacobian(F, z_temp)
+            z_temp = z_temp - pinv(J_temp) * val
+        end
+        
+        z = z_temp
+    end
+    
+    println("[Warning] Failed to find a real point. Final imaginary norm: ", norm(imag.(z)))
+    return z, false
 end
 
 
@@ -1132,10 +1210,12 @@ Creates the matroid geometry, defines the force field, finds an equilibrium, and
 function run_and_animate_collinear_system(n_pts::Int, bounds, collinear_sets; 
                                           dt=0.01, max_steps=300, 
                                           k_p=10.0, k_wall=50.0,
+                                          guess = nothing,
                                           filename="collinear_repulsion.gif", fps=15,
                                           show_guess = false,
                                           framestyle = :none,
-                                          hard_non_collinearity_relns = false)
+                                          hard_non_collinearity_relns = false,
+                                          )
     
     (x_min, x_max), (y_min, y_max) = bounds
 
@@ -1145,25 +1225,50 @@ function run_and_animate_collinear_system(n_pts::Int, bounds, collinear_sets;
     
     V = make_bounded_repelling_force(n_pts, bounds; k_p=k_p, k_wall=k_wall)
     
-    guess = Float64[]
-    
-    radius = min(x_max - x_min, y_max - y_min) * 0.35
-    center_x = (x_max + x_min) / 2.0
-    center_y = (y_max + y_min) / 2.0
-    
-    for i in 1:n_pts
-        # Distribute points evenly around a circle
-        angle = 2 * pi * i / n_pts
-        push!(guess, center_x + radius * cos(angle))
-        push!(guess, center_y + radius * sin(angle))
-    end
-    
-    # Fill remaining slack variables if using the hard-boundary matroid system
-    num_slacks = n_vars - length(guess)
-    if num_slacks > 0
-        append!(guess, fill(0.5, num_slacks))
-    end
-    
+    if guess == nothing
+        guess = Float64[]
+        
+        radius = min(x_max - x_min, y_max - y_min) * 0.35
+        center_x = (x_max + x_min) / 2.0
+        center_y = (y_max + y_min) / 2.0
+        
+        for i in 1:n_pts
+            # Distribute points evenly around a circle
+            angle = 2 * pi * i / n_pts
+            push!(guess, center_x + radius * cos(angle))
+            push!(guess, center_y + radius * sin(angle))
+        end
+        
+        # Fill remaining slack variables if using the hard-boundary matroid system
+        num_slacks = n_vars - length(guess)
+        if num_slacks > 0
+            append!(guess, fill(0.5, num_slacks))
+        end
+    end    
+
+    # if guess === nothing
+    #     guess = Float64[]
+        
+    #     # 5% padding to keep the guess strictly inside the feasible region
+    #     pad_x = (x_max - x_min) * 0.05
+    #     pad_y = (y_max - y_min) * 0.05
+        
+    #     x_vals = range(x_min + pad_x, x_max - pad_x, length=3)
+    #     y_vals = range(y_min + pad_y, y_max - pad_y, length=3)
+        
+    #     # Populate the 3x3 lattice
+    #     for x in x_vals, y in y_vals
+    #         push!(guess, x)
+    #         push!(guess, y)
+    #     end
+        
+    #     # Fill remaining slack variables if using the hard-boundary matroid system
+    #     num_slacks = n_vars - length(guess)
+    #     if num_slacks > 0
+    #         append!(guess, fill(0.5, num_slacks))
+    #     end
+    # end
+
     guess_xs = [guess[2*i - 1] for i in 1:n_pts]
     guess_ys = [guess[2*i] for i in 1:n_pts]
     

@@ -6,7 +6,7 @@ using LinearAlgebra
 
 #using HomotopyOpt
 
-import HomotopyOpt: EDStep, ConstraintVariety
+#import HomotopyOpt: EDStep, ConstraintVariety
 
 include("geometries.jl")
 include("predictors.jl")
