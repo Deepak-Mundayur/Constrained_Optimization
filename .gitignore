@@ -1,6 +1,5 @@
-figs_and_videos/_pycache_
-figs_and_videos/media
-figs_and_videos/julia_generated
+.archive/figs_and_videos
 dynamics_algo1.gif
 dynamics_algo2.gif
-archive/Manifest.toml
+.archive/Manifest.toml
+gifs/.experiments
